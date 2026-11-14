@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>多人聯盟點名系統｜小貓AB攜</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- SheetJS for Excel Import/Export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Tesseract.js for OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- MQTT.js for Zero-Config Cross-Network Realtime Cloud Sync -->
+  <script src="https://cdn.jsdelivr.net/npm/mqtt@5.3.5/dist/mqtt.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 登入遮罩 Modal -->
+  <div id="loginModal" class="modal-overlay active">
+    <div class="modal-card login-card">
+      <div class="login-header">
+        <div class="logo-badge">🐾</div>
+        <h1>多人聯盟點名系統</h1>
+        <p class="subtitle">請輸入名稱登入系統（僅授權會長可修改資料，所有變更皆會留存紀錄）</p>
+      </div>
+
+      <form id="loginForm" autocomplete="off">
+        <div class="form-group">
+          <label for="leaderNameInput">登入名稱</label>
+          <input
+            type="text"
+            id="leaderNameInput"
+            list="leaderSuggestions"
+            placeholder="請輸入會長名稱：大牛、LP33、小烏、蘆薈、RYUU、森森"
+            required
+          />
+          <datalist id="leaderSuggestions">
+            <option value="大牛">授權會長</option>
+            <option value="LP33">授權會長</option>
+            <option value="小烏">授權會長</option>
+            <option value="蘆薈">授權會長</option>
+            <option value="RYUU">授權會長</option>
+            <option value="森森">授權會長</option>
+          </datalist>
+        </div>
+
+        <div class="leader-chips-box">
+          <span class="chips-label">快速帶入會長名稱（擁有編輯權限）：</span>
+          <div class="leader-chips">
+            <button type="button" class="chip-btn" data-name="大牛">👑 大牛</button>
+            <button type="button" class="chip-btn" data-name="LP33">👑 LP33</button>
+            <button type="button" class="chip-btn" data-name="小烏">👑 小烏</button>
+            <button type="button" class="chip-btn" data-name="蘆薈">👑 蘆薈</button>
+            <button type="button" class="chip-btn" data-name="RYUU">👑 RYUU</button>
+            <button type="button" class="chip-btn" data-name="森森">👑 森森</button>
+          </div>
+          <p class="login-hint">💡 若輸入非上述六位會長之名稱，將以「一般成員（唯讀模式）」登入瀏覽大表與名單。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg">進入點名系統</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 頂部導覽列 -->
+  <header class="top-navbar">
+    <div class="brand-area">
+      <span class="brand-icon">🐾</span>
+      <div>
+        <h2 class="brand-title">多人聯盟點名系統</h2>
+        <span id="syncStatusBadge" class="sync-badge local" title="點擊設定多人雲端同步">💾 本機儲存模式</span>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <button id="openSyncModalBtn" class="btn btn-outline btn-sm" title="設定 GitHub 多人即時同步">
+        ☁️ 多人同步設定
+      </button>
+      <button id="openImportModalBtn" class="btn btn-secondary btn-sm auth-only">
+        📥 匯入名單 (Excel / 圖片OCR)
+      </button>
+      <button id="openExportModalBtn" class="btn btn-outline btn-sm">
+        📤 匯出名單 / 報表
+      </button>
+      <button id="openLogDrawerBtn" class="btn btn-outline btn-sm">
+        📜 修改紀錄 <span id="logCountBadge" class="badge">0</span>
+      </button>
+
+      <div class="user-profile">
+        <span id="currentUserRoleBadge" class="role-badge">未登入</span>
+        <strong id="currentUserNameDisplay">-</strong>
+        <button id="switchUserBtn" class="btn-link">切換身分</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主內容區 -->
+  <main class="main-container">
+    <!-- 主分頁導覽列 (點名大表 + 各公會分頁 + 新增公會按鈕) -->
+    <div class="tabs-wrapper">
+      <div id="tabsContainer" class="tabs-bar" role="tablist">
+        <!-- 由 JS 動態渲染：📊 點名大表總覽 + 各公會 Tab -->
+      </div>
+      <div class="tabs-actions auth-only">
+        <button id="addGuildBtn" class="btn btn-accent btn-sm">
+          ➕ 新增公會
+        </button>
+      </div>
+    </div>
+
+    <!-- 今日日期與大表小分頁控制列（大表直接使用今天日期，並在底下自己分出小分頁，且可隨時改名） -->
+    <section class="subtabs-manager-card card">
+      <div class="subtabs-header-row">
+        <div class="today-banner-left">
+          <span class="today-tag">📅 今日日期</span>
+          <strong id="todayDateDisplay" class="today-date-number">2026-11-15</strong>
+          <select id="historyDateSelect" class="form-select form-select-sm history-date-select" title="切換檢視歷史日期"></select>
+        </div>
+
+        <!-- 新增小分頁表單 -->
+        <form id="createSubTabForm" class="subtab-add-form auth-only" autocomplete="off">
+          <input
+            type="text"
+            id="newSubTabNameInput"
+            class="form-input form-input-sm subtab-name-input"
+            placeholder="輸入小分頁名稱（如：爬塔、王團、第2場）..."
+          />
+          <button type="submit" class="btn btn-primary btn-sm">
+            ➕ 新增小分頁
+          </button>
+        </form>
+      </div>
+
+      <!-- 當日小分頁列表 + 當前小分頁改名/刪除操作 -->
+      <div class="subtabs-bar-wrapper">
+        <div id="subTabsBar" class="session-tabs-bar"></div>
+        <div class="subtab-current-actions auth-only">
+          <button type="button" id="renameSubTabBtn" class="btn btn-outline btn-xs" title="修改目前小分頁的名稱">
+            ✏️ 小分頁改名
+          </button>
+          <button type="button" id="copyFromFirstSubTabBtn" class="btn btn-outline btn-xs" title="將今日第一個分頁的已簽到名單同步複製到此分頁">
+            🔄 同步今日在場名單
+          </button>
+          <button type="button" id="deleteSubTabBtn" class="btn btn-danger-outline btn-xs" title="刪除目前選取的小分頁">
+            🗑️ 刪除小分頁
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分頁內容：1. 點名大表總覽 (Master Table View) -->
+    <section id="masterTabView" class="tab-view active">
+      <!-- 各公會出席統計小卡 -->
+      <div id="guildSummaryCards" class="guild-summary-grid"></div>
+
+      <!-- 🎲 隨機組隊功能區塊（利用大表在場的所有人進行隨機組隊） -->
+      <div class="card team-generator-card">
+        <div class="team-header-row">
+          <div>
+            <h3 class="team-section-title">
+              🎲 大表在場人員隨機組隊 — <span id="teamSubTabTitle" class="highlight-date"></span>
+            </h3>
+            <p class="card-desc">
+              自動利用目前小分頁「<strong>在場（已簽到）</strong>」的所有玩家（共 <strong id="presentCountForTeam" class="text-success">0</strong> 人）進行隨機分組
+            </p>
+          </div>
+
+          <div class="team-controls">
+            <div class="team-size-group">
+              <label for="teamSizeInput">每組人數：</label>
+              <div class="quick-size-btns">
+                <button type="button" class="size-chip" data-size="2">2人</button>
+                <button type="button" class="size-chip" data-size="3">3人</button>
+                <button type="button" class="size-chip" data-size="4">4人</button>
+                <button type="button" class="size-chip" data-size="5">5人</button>
+                <button type="button" class="size-chip active" data-size="6">6人</button>
+              </div>
+              <input
+                type="number"
+                id="teamSizeInput"
+                class="form-input form-input-sm team-size-input"
+                min="1"
+                max="100"
+                value="6"
+              />
+              <span>人一組</span>
+            </div>
+
+            <select id="teamRemainderMode" class="form-select form-select-sm" title="多出來的人數如何處理">
+              <option value="extra_group">餘數獨立成最後一組</option>
+              <option value="distribute">餘數平均併入各組</option>
+            </select>
+
+            <button type="button" id="runRandomTeamBtn" class="btn btn-accent btn-sm auth-only">
+              🎲 隨機組隊 / 重新洗牌
+            </button>
+            <button type="button" id="copyTeamsTextBtn" class="btn btn-outline btn-sm">
+              📋 複製組隊結果
+            </button>
+            <button type="button" id="clearTeamsBtn" class="btn btn-ghost btn-sm auth-only">
+              清除分組
+            </button>
+          </div>
+        </div>
+
+        <!-- 隨機組隊結果顯示網格 -->
+        <div id="randomTeamsContainer" class="teams-result-grid"></div>
+      </div>
+
+      <!-- 📊 點名大表明細卡片 -->
+      <div class="card master-table-card" style="margin-top: 18px;">
+        <div class="card-header-row">
+          <div>
+            <h3 class="card-title">
+              📊 點名大表 — <span id="masterDateTitle" class="highlight-date"></span>
+            </h3>
+            <p class="card-desc">於各公會分頁勾選簽到後，立即同步呈現於此大表，並可登記得名名次與查看分組</p>
+          </div>
+          <div class="master-stats-inline">
+            <span class="big-counter">
+              在場簽到總人數：<strong id="bigTotalCount">0</strong>
+              <small>/ 聯盟共 <span id="masterTotalMembers">0</span> 人（出席率 <span id="masterAttendanceRate">0%</span>）</small>
+            </span>
+          </div>
+        </div>
+
+        <!-- 大表篩選列 + 名次設定按鈕 -->
+        <div class="filter-bar">
+          <div class="filter-group">
+            <label>顯示狀態：</label>
+            <div class="segmented-control">
+              <button type="button" class="seg-btn active" data-filter-status="checked">✅ 在場已簽到</button>
+              <button type="button" class="seg-btn" data-filter-status="all">👥 全部聯盟成員</button>
+              <button type="button" class="seg-btn" data-filter-status="unchecked">⏳ 未簽到成員</button>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <label for="masterGuildFilter">公會：</label>
+            <select id="masterGuildFilter" class="form-select form-select-sm">
+              <option value="ALL">全部公會</option>
+            </select>
+          </div>
+
+          <div class="filter-group search-group">
+            <input type="text" id="masterSearchInput" class="form-input form-input-sm" placeholder="🔍 搜尋玩家名稱、職業、公會或名次..." />
+          </div>
+
+          <button type="button" id="openRankConfigModalBtn" class="btn btn-secondary btn-sm auth-only" title="調整得名下拉選單的最大名次與名次區間">
+            🏆 得名名次設定 (<span id="currentRankConfigSummary">1~10名</span>)
+          </button>
+
+          <button id="exportMasterExcelBtn" class="btn btn-outline btn-sm">
+            📊 匯出全部小分頁大表 Excel
+          </button>
+        </div>
+
+        <!-- 大表細項表格 -->
+        <div class="table-responsive">
+          <table class="data-table master-data-table">
+            <thead>
+              <tr>
+                <th class="col-index">#</th>
+                <th class="col-name sortable-th" data-master-sort="memberName" title="點擊依玩家名稱排序">
+                  <span>玩家名稱</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-job sortable-th" data-master-sort="memberJob" title="點擊依職業排序">
+                  <span>職業</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-guild sortable-th" data-master-sort="guildName" title="點擊依公會名稱排序">
+                  <span>公會名稱</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-rank sortable-th" data-master-sort="rank" title="點擊依得名名次排序">
+                  <span>🏆 得名名次</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-team sortable-th" data-master-sort="team" title="點擊依隨機組隊組別排序">
+                  <span>🎲 隨機組隊</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-status sortable-th" data-master-sort="isChecked" title="點擊依簽到狀態排序">
+                  <span>簽到狀態</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-time sortable-th" data-master-sort="time" title="點擊依簽到時間排序">
+                  <span>簽到時間 / 會長</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-action auth-only">快速操作</th>
+              </tr>
+            </thead>
+            <tbody id="masterTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分頁內容：2. 單一公會點名與成員管理分頁 (Guild Tab View) -->
+    <section id="guildTabView" class="tab-view">
+      <div class="card guild-detail-card">
+        <div class="guild-header-banner">
+          <div class="guild-title-area">
+            <div class="guild-badge-lg">🛡️</div>
+            <div>
+              <div class="guild-title-row">
+                <h3 id="activeGuildNameTitle">公會名稱</h3>
+                <button id="renameGuildBtn" class="btn btn-ghost btn-xs auth-only" title="修改公會名稱">✏️ 改名</button>
+              </div>
+              <p class="guild-meta">
+                目前對應大表分頁：<strong id="guildCurrentDateLabel" class="highlight-date">-</strong> ｜
+                本場已簽到：<strong id="guildCheckedCount" class="text-success">0</strong> / <span id="guildTotalCount">0</span> 人
+                （出席率 <span id="guildRateText">0%</span>）
+              </p>
+            </div>
+          </div>
+
+          <div class="guild-header-actions">
+            <button id="openImportForGuildBtn" class="btn btn-secondary btn-sm auth-only">
+              📥 上傳 Excel / 圖片辨識加入此公會
+            </button>
+            <button id="exportSingleGuildBtn" class="btn btn-outline btn-sm">
+              📤 匯出此公會名單
+            </button>
+            <button id="clearGuildMembersBtn" class="btn btn-danger-outline btn-sm auth-only" title="清空此公會所有成員">
+              🧹 清空成員
+            </button>
+            <button id="deleteGuildBtn" class="btn btn-danger btn-sm auth-only">
+              🗑️ 刪除公會
+            </button>
+          </div>
+        </div>
+
+        <!-- 新增單一成員（含玩家名稱 + 職業）& 搜尋與批次勾選列 -->
+        <div class="guild-toolbar">
+          <form id="addMemberForm" class="add-member-inline auth-only" autocomplete="off">
+            <input
+              type="text"
+              id="newMemberNameInput"
+              class="form-input"
+              placeholder="輸入玩家名稱..."
+              required
+            />
+            <input
+              type="text"
+              id="newMemberJobInput"
+              class="form-input job-input"
+              placeholder="輸入職業（選填）..."
+            />
+            <button type="submit" class="btn btn-primary">➕ 新增成員</button>
+          </form>
+
+          <div class="guild-toolbar-right">
+            <input
+              type="text"
+              id="guildMemberSearchInput"
+              class="form-input"
+              placeholder="🔍 搜尋名稱或職業..."
+            />
+            <button id="checkAllGuildBtn" class="btn btn-outline btn-sm auth-only">☑️ 全選簽到</button>
+            <button id="uncheckAllGuildBtn" class="btn btn-outline btn-sm auth-only">⬜ 全部取消</button>
+          </div>
+        </div>
+
+        <!-- 公會成員清單（包含勾選簽到、名稱、職業、得名名次、操作） -->
+        <div class="table-responsive">
+          <table class="data-table guild-member-table">
+            <thead>
+              <tr>
+                <th class="col-check sortable-th" data-guild-sort="isChecked" title="點擊依簽到狀態排序">
+                  <span>點名簽到</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-index">#</th>
+                <th class="col-name sortable-th" data-guild-sort="name" title="點擊依玩家名稱排序">
+                  <span>玩家名稱</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-job sortable-th" data-guild-sort="job" title="點擊依職業排序">
+                  <span>職業</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-rank sortable-th" data-guild-sort="rank" title="點擊依本場得名排序">
+                  <span>🏆 本場得名</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-status-wide sortable-th" data-guild-sort="time" title="點擊依簽到時間排序">
+                  <span>本場簽到狀態</span><span class="sort-icon">⇅</span>
+                </th>
+                <th class="col-action-wide auth-only">編輯 / 刪除</th>
+              </tr>
+            </thead>
+            <tbody id="guildMembersTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= 🏆 得名名次設定 Modal ================= -->
+  <div id="rankConfigModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🏆 得名下拉選單設定（最大名次與區間）</h3>
+        <button type="button" class="modal-close" data-close="rankConfigModal">&times;</button>
+      </div>
+      <form id="rankConfigForm" autocomplete="off">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="rankMinInput">起始名次（預設第 1 名）：</label>
+            <input type="number" id="rankMinInput" class="form-input" min="1" max="500" value="1" required />
+          </div>
+
+          <div class="form-group">
+            <label for="rankMaxInput">最大名次上限（預設第 10 名，可自由調大如 20、30、50）：</label>
+            <input type="number" id="rankMaxInput" class="form-input" min="1" max="500" value="10" required />
+          </div>
+
+          <div class="form-group">
+            <label for="rankStepInput">名次區間跨度（Step）：</label>
+            <input type="number" id="rankStepInput" class="form-input" min="1" max="100" value="1" required />
+            <small class="form-help">
+              💡 設為 <code>1</code> 時顯示「第 1 名、第 2 名...第 10 名」；若設為 <code>5</code> 則自動以區間顯示「第 1~5 名、第 6~10 名...」！
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="rankCustomRangesInput">額外自訂名次區間 / 獎項（選填，以逗號分隔）：</label>
+            <input
+              type="text"
+              id="rankCustomRangesInput"
+              class="form-input"
+              placeholder="例如：11~20名, 21~30名, 參加獎, MVP"
+            />
+            <small class="form-help">
+              💡 您可以同時保留前 1~10 名的單獨名次，並在這裡加上 <code>11~20名, 21~30名</code> 等區間選項！
+            </small>
+          </div>
+
+          <div class="rank-preview-box">
+            <span class="chips-label">下拉選單預覽：</span>
+            <div id="rankOptionsPreview" class="leader-chips"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="resetRankConfigBtn" class="btn btn-ghost">恢復預設 (1~10名)</button>
+          <button type="button" class="btn btn-outline" data-close="rankConfigModal">取消</button>
+          <button type="submit" class="btn btn-primary">💾 儲存名次設定</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= 小分頁改名 Modal ================= -->
+  <div id="subTabRenameModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>✏️ 修改小分頁名稱</h3>
+        <button type="button" class="modal-close" data-close="subTabRenameModal">&times;</button>
+      </div>
+      <form id="subTabRenameForm" autocomplete="off">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="subTabRenameInput">小分頁名稱</label>
+            <input type="text" id="subTabRenameInput" class="form-input" placeholder="例如：爬塔、王團、第一場..." required />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" data-close="subTabRenameModal">取消</button>
+          <button type="submit" class="btn btn-primary">儲存名稱</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= 防呆刪除確認 Modal ================= -->
+  <div id="confirmDeleteModal" class="modal-overlay">
+    <div class="modal-card danger-modal">
+      <div class="modal-header">
+        <h3 id="deleteModalTitle">⚠️ 刪除防呆確認</h3>
+        <button type="button" class="modal-close" data-close="confirmDeleteModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="deleteWarningMessage" class="warning-alert"></div>
+        <div id="deleteConfirmInputBox" class="form-group" style="margin-top: 14px;">
+          <label id="deleteConfirmPromptLabel" for="deleteConfirmInput">請輸入目標名稱以確認刪除：</label>
+          <input type="text" id="deleteConfirmInput" class="form-input" autocomplete="off" />
+        </div>
+        <label class="checkbox-confirm-row">
+          <input type="checkbox" id="deleteConfirmCheckbox" />
+          <span>我已確認上述資訊，了解刪除後無法直接復原（將會記錄於修改紀錄中）</span>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-close="confirmDeleteModal">取消返回</button>
+        <button type="button" id="confirmDeleteExecuteBtn" class="btn btn-danger" disabled>確認永久刪除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 新增/改名公會 Modal ================= -->
+  <div id="guildFormModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="guildFormModalTitle">➕ 新增公會</h3>
+        <button type="button" class="modal-close" data-close="guildFormModal">&times;</button>
+      </div>
+      <form id="guildForm" autocomplete="off">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="guildNameInput">公會名稱</label>
+            <input type="text" id="guildNameInput" class="form-input" placeholder="例如：AB優酪乳、小貓一館..." required />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" data-close="guildFormModal">取消</button>
+          <button type="submit" class="btn btn-primary">儲存確認</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= 編輯成員 (名稱 + 職業) Modal ================= -->
+  <div id="editMemberModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>✏️ 編輯成員資料</h3>
+        <button type="button" class="modal-close" data-close="editMemberModal">&times;</button>
+      </div>
+      <form id="editMemberForm" autocomplete="off">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="editMemberNameInput">玩家名稱</label>
+            <input type="text" id="editMemberNameInput" class="form-input" required />
+          </div>
+          <div class="form-group">
+            <label for="editMemberJobInput">職業</label>
+            <input type="text" id="editMemberJobInput" class="form-input" placeholder="例如：主教、夜使者、英雄..." />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" data-close="editMemberModal">取消</button>
+          <button type="submit" class="btn btn-primary">儲存變更</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ================= 匯入名單 (Excel + 圖片 OCR) Modal ================= -->
+  <div id="importModal" class="modal-overlay">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>📥 匯入公會成員名單（Excel 表格 / 遊戲截圖 OCR 辨識）</h3>
+        <button type="button" class="modal-close" data-close="importModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="importTargetGuildSelect">📌 選擇要匯入名單的目標公會分頁：</label>
+          <select id="importTargetGuildSelect" class="form-select"></select>
+          <small class="form-help">💡 上傳的名單（玩家名稱、職業）將會全部加入到您上方選擇的這個公會分頁中！</small>
+        </div>
+
+        <div class="import-mode-tabs">
+          <button type="button" class="import-tab-btn active" data-import-tab="excel">📊 上傳 Excel / CSV 名單</button>
+          <button type="button" class="import-tab-btn" data-import-tab="ocr">🖼️ 上傳圖片辨識玩家名稱 (OCR)</button>
+        </div>
+
+        <!-- Excel 匯入面板 -->
+        <div id="excelImportPane" class="import-pane active">
+          <div class="upload-dropzone" id="excelDropzone">
+            <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv" hidden />
+            <div class="drop-icon">📄</div>
+            <p>點擊選擇或拖曳 <strong>.xlsx / .xls / .csv</strong> 檔案至此</p>
+            <small>自動讀取表格內的「<strong>角色名稱（玩家名稱）</strong>」與「<strong>職業</strong>」欄位</small>
+            <div style="margin-top: 10px;">
+              <button type="button" id="selectExcelBtn" class="btn btn-secondary btn-sm">選擇 Excel 檔案</button>
+              <button type="button" id="downloadTemplateBtn" class="btn btn-outline btn-sm">⬇️ 下載範例 Excel 範本 (名稱+職業)</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 圖片 OCR 辨識面板 -->
+        <div id="ocrImportPane" class="import-pane">
+          <div class="ocr-options-bar">
+            <label>辨識語系：</label>
+            <select id="ocrLangSelect" class="form-select form-select-sm">
+              <option value="chi_tra+eng">繁體中文 + 英文 (推薦)</option>
+              <option value="chi_tra+chi_sim+eng">繁簡中文 + 英文</option>
+              <option value="eng">純英文 / 數字</option>
+            </select>
+            <label class="checkbox-inline" title="遊戲截圖若為黑底白字，開啟反相與對比強化可大幅提升辨識準確率">
+              <input type="checkbox" id="ocrPreprocessCheck" checked />
+              <span>✨ 遊戲深色背景強化（黑底白字增強）</span>
+            </label>
+          </div>
+
+          <div class="upload-dropzone" id="ocrDropzone">
+            <input type="file" id="ocrFileInput" accept="image/*" hidden />
+            <div class="drop-icon">🖼️</div>
+            <p>點擊上傳遊戲成員名單截圖、拖曳圖片，或直接按 <kbd>Ctrl</kbd>+<kbd>V</kbd> 貼上截圖</p>
+            <button type="button" id="selectOcrImgBtn" class="btn btn-secondary btn-sm" style="margin-top:8px;">選擇圖片檔案</button>
+          </div>
+
+          <div id="ocrProgressBox" class="ocr-progress-box hidden">
+            <div class="ocr-status-row">
+              <span id="ocrStatusText">正在載入辨識引擎...</span>
+              <strong id="ocrPercentText">0%</strong>
+            </div>
+            <div class="progress-bar-bg">
+              <div id="ocrProgressBar" class="progress-bar-fill" style="width: 0%"></div>
+            </div>
+          </div>
+
+          <div id="ocrPreviewRow" class="ocr-preview-grid hidden">
+            <div class="ocr-img-box">
+              <span class="box-label">原始/強化預覽圖：</span>
+              <canvas id="ocrPreprocessCanvas"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- 辨識/解析結果預覽與微調區 -->
+        <div class="parsed-preview-section">
+          <div class="preview-header">
+            <label for="parsedNamesTextarea">
+              ✏️ 待匯入名單預覽與微調（每行一位成員，格式：<code>玩家名稱,職業</code> 或純 <code>玩家名稱</code>）：
+            </label>
+            <span id="parsedCountBadge" class="badge">共 0 位</span>
+          </div>
+          <textarea
+            id="parsedNamesTextarea"
+            rows="7"
+            class="form-textarea"
+            placeholder="範例：&#10;LP33,主教&#10;o煞氣a蘆薈o,夜使者&#10;襪襪是隻喵,箭神"
+          ></textarea>
+          <label class="checkbox-inline" style="margin-top: 8px;">
+            <input type="checkbox" id="importAndCheckInToday" />
+            <span>✅ 匯入成員的同時，順便在目前點名小分頁（<strong id="importTodayDateLabel"></strong>）自動打勾簽到</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" data-close="importModal">取消</button>
+        <button type="button" id="confirmImportBtn" class="btn btn-primary">📥 確認匯入至所選公會</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 匯出名單 Modal ================= -->
+  <div id="exportModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>📤 匯出公會成員名單與點名報表</h3>
+        <button type="button" class="modal-close" data-close="exportModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="export-option-card">
+          <h4>1. 匯出公會成員名單 (Excel：含名稱、職業)</h4>
+          <p>可選擇匯出單一公會或整個聯盟所有公會的成員清單（含玩家名稱與職業）。</p>
+          <div class="export-action-row">
+            <select id="exportGuildSelect" class="form-select">
+              <option value="ALL">🌟 全部公會（包含總表與各公會分頁）</option>
+            </select>
+            <button type="button" id="doExportGuildRosterBtn" class="btn btn-primary">⬇️ 匯出成員名單 (.xlsx)</button>
+          </div>
+        </div>
+
+        <div class="export-option-card" style="margin-top: 16px;">
+          <h4>2. 匯出點名大表與各分頁全部數據 (Excel)</h4>
+          <p>一次匯出各個小分頁（如：主點名表、爬塔...）與各公會分頁的全部資料、出席統計數據、得名名次與隨機組隊結果。</p>
+          <div class="export-action-row" style="margin-bottom: 10px;">
+            <select id="exportSessionScopeSelect" class="form-select">
+              <option value="ALL_DATE">🌟 當日全部小分頁完整資料與數據（推薦）</option>
+              <option value="ALL_SESSIONS">🗂️ 系統全部日期＋所有分頁完整資料與數據</option>
+              <option value="CURRENT_ONLY">📌 僅匯出目前單一小分頁</option>
+            </select>
+          </div>
+          <button type="button" id="doExportSessionReportBtn" class="btn btn-secondary btn-block">📊 匯出完整點名大表與各分頁數據 (.xlsx)</button>
+        </div>
+
+        <div class="export-option-card" style="margin-top: 16px;">
+          <h4>3. 系統完整資料備份檔 (.json)</h4>
+          <p>匯出或還原包含所有公會、歷次點名與修改紀錄的完整 JSON 檔案。</p>
+          <div class="export-action-row">
+            <button type="button" id="exportJsonBackupBtn" class="btn btn-outline btn-sm">⬇️ 下載 JSON 備份</button>
+            <input type="file" id="importJsonBackupInput" accept=".json" hidden />
+            <button type="button" id="importJsonBackupBtn" class="btn btn-outline btn-sm auth-only">📂 還原 JSON 備份</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 多人雲端同步設定 Modal (GitHub Pages 專用) ================= -->
+  <div id="syncModal" class="modal-overlay">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h3>☁️ 跨電腦／跨網路多人即時同步設定</h3>
+        <button type="button" class="modal-close" data-close="syncModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="sync-info-box">
+          <p><strong>✅ 已內建免設定「自動跨網路雲端同步」引擎！</strong></p>
+          <p>系統預設已自動啟用雙通道雲端同步（<strong>MQTT 雲端保留狀態 + Ntfy 即時串流</strong>）。只要所有人打開同一個 GitHub Pages 網址（並使用相同的聯盟房間代碼），<strong>不同電腦、不同手機、不同網路的使用者都能自動即時同步所有公會名單、簽到勾選、得名與組隊資料！</strong></p>
+        </div>
+
+        <div class="form-group" style="margin-top: 14px;">
+          <label for="syncRoomKeyInput">📌 聯盟專屬同步房間代碼 (Room ID，所有電腦請保持相同)：</label>
+          <input
+            type="text"
+            id="syncRoomKeyInput"
+            class="form-input"
+            placeholder="例如：cat-ab-alliance"
+            value="cat-ab-alliance"
+          />
+          <small class="form-help">💡 預設為 <code>cat-ab-alliance</code>，所有人打開網址即自動連入此房間同步。</small>
+        </div>
+
+        <div class="form-group">
+          <label for="firebaseDbUrlInput">進階選填：自訂 Firebase Realtime Database 網址 (URL，可留空)：</label>
+          <input
+            type="url"
+            id="firebaseDbUrlInput"
+            class="form-input"
+            placeholder="留空即使用內建免費雲端同步；若有申請 Firebase 可貼上 https://...firebasedatabase.app"
+          />
+        </div>
+
+        <div class="sync-share-box">
+          <button type="button" id="copyShareUrlBtn" class="btn btn-secondary btn-sm">🔗 複製同步網址傳給其他會長</button>
+          <button type="button" id="forcePushCloudBtn" class="btn btn-primary btn-sm auth-only">⬆️ 立即將本機資料推送至雲端 (覆蓋雲端)</button>
+          <button type="button" id="forcePullCloudBtn" class="btn btn-outline btn-sm">⬇️ 立即從雲端拉取最新資料</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="disconnectCloudBtn" class="btn btn-danger-outline">暫停雲端同步</button>
+        <button type="button" class="btn btn-outline" data-close="syncModal">關閉</button>
+        <button type="button" id="saveSyncConfigBtn" class="btn btn-primary">☁️ 儲存並立即同步</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 修改紀錄側邊抽屜 (Audit Log Drawer) ================= -->
+  <div id="logDrawerOverlay" class="drawer-overlay">
+    <aside class="drawer-panel">
+      <div class="drawer-header">
+        <div>
+          <h3>📜 會長修改與簽到紀錄</h3>
+          <p class="drawer-subtitle">所有由 6 位會長執行的資料變更皆會完整留存</p>
+        </div>
+        <button type="button" id="closeLogDrawerBtn" class="modal-close">&times;</button>
+      </div>
+
+      <div class="drawer-toolbar">
+        <select id="logLeaderFilter" class="form-select form-select-sm">
+          <option value="ALL">全部會長</option>
+          <option value="大牛">👑 大牛</option>
+          <option value="LP33">👑 LP33</option>
+          <option value="小烏">👑 小烏</option>
+          <option value="蘆薈">👑 蘆薈</option>
+          <option value="RYUU">👑 RYUU</option>
+          <option value="森森">👑 森森</option>
+        </select>
+        <input type="text" id="logSearchInput" class="form-input form-input-sm" placeholder="搜尋紀錄內容..." />
+        <button type="button" id="exportLogsExcelBtn" class="btn btn-outline btn-xs">匯出紀錄</button>
+      </div>
+
+      <div id="auditLogList" class="audit-log-list"></div>
+    </aside>
+  </div>
+
+  <!-- Toast 通知容器 -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
